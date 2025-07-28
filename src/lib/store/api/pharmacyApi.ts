@@ -82,6 +82,16 @@ export interface ExpiryAlert {
     expiry_date: string
     days_to_expiry: number
     estimated_loss: number
+    mrp?: number
+}
+
+export interface ExpiryAlertsResponse {
+    data: ExpiryAlert[]
+    total: number
+    page: number
+    limit: number
+    totalPages: number
+    totalValueAtRisk: number
 }
 
 export interface ExpiryStats {
@@ -248,7 +258,7 @@ export const pharmacyApi = createApi({
         }),
 
         // Expiry tracking endpoints
-        getExpiryAlerts: builder.query<ExpiryAlert[], {
+        getExpiryAlerts: builder.query<ExpiryAlertsResponse, {
             days?: number;
             medicine_name?: string;
             batch_number?: string;
@@ -256,6 +266,8 @@ export const pharmacyApi = createApi({
             start_date?: string;
             end_date?: string;
             status?: string;
+            page?: number;
+            limit?: number;
         }>({
             query: (params = {}) => {
                 const searchParams = new URLSearchParams()
@@ -266,6 +278,8 @@ export const pharmacyApi = createApi({
                 if (params.start_date) searchParams.append('start_date', params.start_date)
                 if (params.end_date) searchParams.append('end_date', params.end_date)
                 if (params.status) searchParams.append('status', params.status)
+                if (params.page) searchParams.append('page', params.page.toString())
+                if (params.limit) searchParams.append('limit', params.limit.toString())
 
                 return `expiry?${searchParams.toString()}`
             },

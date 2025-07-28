@@ -72,7 +72,7 @@ export async function GET(request: NextRequest) {
 
             // Calculate value at risk (total value of items expiring in next 90 days)
             const valueAtRisk = expiringIn90?.reduce((total, item) => {
-                const itemValue = (item.current_stock || 0) * (item.current_mrp || 0)
+                const itemValue = (item.current_stock || 0) * (item.last_purchase_rate || 0)
                 return total + itemValue
             }, 0) || 0
 
@@ -141,18 +141,6 @@ export async function GET(request: NextRequest) {
             .eq('is_active', true)
             .gt('current_stock', 0)
 
-        // Default filter: next year if no date range is specified (more permissive than 90 days)
-        if (!startDate && !endDate && !medicineName && !batchNumber && !supplierName && !status) {
-            // Only apply default filter if no other filters are specified
-            // Show items expiring in the next year to ensure we have data
-            const today = new Date()
-            const nextYear = new Date(today.getTime() + 365 * 24 * 60 * 60 * 1000)
-            query = query.gte('expiry_date', today.toISOString().split('T')[0])
-            query = query.lte('expiry_date', nextYear.toISOString().split('T')[0])
-        }
-
-
-
         // Add status filter based on expiry dates
         if (status) {
             const today = new Date()
@@ -199,21 +187,27 @@ export async function GET(request: NextRequest) {
             query = query.lte('expiry_date', endDate)
         }
 
-        // Add days filter (for custom ranges) - only if no specific date is provided
-        if (days !== 90 && !startDate && !endDate) {
+        // Add days filter - only if no specific filters are provided and days param is explicitly sent
+        const hasSpecificFilters = !!(medicineName || batchNumber || supplierName || startDate || endDate || status)
+        const daysParam = searchParams.get('days') // Check if days was explicitly provided
+
+        if (!hasSpecificFilters && daysParam) {
+            const today = new Date()
             const futureDate = new Date()
             futureDate.setDate(futureDate.getDate() + days)
+
+            // Apply date range based on days parameter (only for initial load)
+            query = query.gte('expiry_date', today.toISOString().split('T')[0])
             query = query.lte('expiry_date', futureDate.toISOString().split('T')[0])
         }
 
-        // Use default limit of 10 if no pagination parameters and no filters
-        const hasCustomFilters = !!(startDate || endDate || medicineName || batchNumber || supplierName || status)
-        const finalLimit = (!hasCustomFilters && page === 1 && limit === 50) ? defaultLimit : actualLimit
-        const finalOffset = (!hasCustomFilters && page === 1 && limit === 50) ? 0 : offset
+        // Always use provided pagination parameters
+        const finalLimit = Math.min(limit, 50) // Cap at 50 for performance
+        const finalOffset = offset
 
+        // Get all data without pagination first
         const { data: inventoryData, error } = await query
             .order('expiry_date', { ascending: true })
-            .range(finalOffset, finalOffset + finalLimit - 1)
 
         if (error) {
             console.error('Expiry alerts fetch error:', error)
@@ -307,22 +301,45 @@ export async function GET(request: NextRequest) {
                     mrp: item.current_mrp || 0,
                     quantity: item.current_stock || 0
                 }
-            })
-            ?.filter(item => {
-                // Apply supplier name filter
-                if (supplierName) {
-                    return item.supplier_name.toLowerCase().includes(supplierName.toLowerCase())
-                }
-                return true
             }) || []
 
+        // Get total count before applying supplier filter
+        const totalBeforeSupplierFilter = transformedData.length
+
+        // Apply supplier name filter (if any)
+        const finalData = transformedData?.filter(item => {
+            if (supplierName) {
+                return item.supplier_name.toLowerCase().includes(supplierName.toLowerCase())
+            }
+            return true
+        }) || []
+
+        // Since supplier filter is applied after database query, we need to recalculate pagination
+        const paginatedData = finalData.slice(finalOffset, finalOffset + finalLimit)
+        const totalCount = finalData.length
+
+        // Calculate Value at Risk for ALL filtered results (not just current page)
+        const totalValueAtRisk = finalData.reduce((total, item) => {
+            return total + (item.estimated_loss || 0)
+        }, 0)
+
         console.log('📋 Expiry alerts:', {
-            totalFound: transformedData.length,
+            totalFound: totalCount,
+            currentPage: page,
+            itemsPerPage: finalLimit,
+            totalValueAtRisk: totalValueAtRisk,
             filters: { medicineName, batchNumber, supplierName, startDate, endDate, days },
-            sampleSuppliers: transformedData.slice(0, 3).map(item => item.supplier_name)
+            sampleSuppliers: paginatedData.slice(0, 3).map(item => item.supplier_name)
         })
 
-        return NextResponse.json(transformedData)
+        return NextResponse.json({
+            data: paginatedData,
+            total: totalCount,
+            page: page,
+            limit: finalLimit,
+            totalPages: Math.ceil(totalCount / finalLimit),
+            totalValueAtRisk: totalValueAtRisk
+        })
     } catch (error) {
         console.error('API error:', error)
         return NextResponse.json(
